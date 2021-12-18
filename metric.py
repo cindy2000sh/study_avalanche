@@ -2,14 +2,14 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 
-def visualize(M, save_path, partial=False):
+def visualize(M, save_path, curr_time, strategy, partial=False):
     # heatmap
     if not partial:
         ax = sns.heatmap(M, annot=True, fmt=".1%", cmap="YlGnBu")
         ax.set_title("Accuracy Matrix")
         plt.xlabel('Train Bucket')
         plt.ylabel('Test Bucket')
-        plt.savefig(save_path+'/iid.png')
+        plt.savefig(save_path+f'/figures/{curr_time}_{strategy}_iid.png')
     else:
         mask = np.zeros_like(M)
         mask[np.tril_indices_from(mask)] = True # lower triangle indices
@@ -17,7 +17,7 @@ def visualize(M, save_path, partial=False):
         ax.set_title("Accuracy Matrix")
         plt.xlabel('Train Bucket')
         plt.ylabel('Test Bucket')
-        plt.savefig(save_path+'/streaming.png')
+        plt.savefig(save_path+f'/figures/{curr_time}_{strategy}_streaming.png')
     return
 
 def in_domain(M):
@@ -31,10 +31,10 @@ def next_domain(M):
 # TODO: check if exclude diagonals
 def backward_transfer(M):
     r,_ = M.shape
-    res = sum([M[i,j] for i in range(r) for j in range(i+1,r)])
-    return res/len(res)
+    res = [M[i,j] for i in range(r) for j in range(i+1,r)]
+    return sum(res)/len(res)
 
 def forward_transfer(M):
     r,_ = M.shape
-    res = sum([M[i,j] for i in range(r) for j in range(i)])
-    return res/len(res)
+    res = [M[i,j] for i in range(r) for j in range(i)]
+    return sum(res)/len(res)

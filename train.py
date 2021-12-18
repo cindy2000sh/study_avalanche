@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import torch.nn as nn
 from torch.optim import Adam, lr_scheduler
 from torch.nn import CrossEntropyLoss, DataParallel, Linear
 from torchvision.models import resnet18
@@ -13,8 +14,10 @@ from avalanche.benchmarks.utils.data_loader import ReplayDataLoader
 from avalanche.training.storage_policy import ReservoirSamplingBuffer
 from avalanche.training.plugins import StrategyPlugin
 from avalanche.training.storage_policy import ExemplarsBuffer
-from avalanche.benchmarks.utils import AvalancheConcatDataset, AvalancheSubset
+from avalanche.benchmarks.utils import AvalancheDataset, AvalancheConcatDataset, AvalancheSubset
 from metric import *
+from dataset import SubDataset
+
 
 
 class BiasedReservoirSamplingBuffer(ExemplarsBuffer):
@@ -27,19 +30,36 @@ class BiasedReservoirSamplingBuffer(ExemplarsBuffer):
 
     def update(self, strategy):
         """ Update buffer. """
-        self.update_from_dataset(strategy.experience.dataset, strategy.experience.task_label, self.alpha)
+        self.update_from_dataset(strategy.experience.dataset, 
+                                strategy.experience.task_label, 
+                                self.alpha, self.mode)
 
     def update_from_dataset(self, new_data, time_stamp, alpha, mode): 
         """Update the buffer using the given dataset."""
-        new_weights = torch.rand(len(new_data))
-        for p_id in new_weights:
+        valid = []
+        while(len(valid) == 0):
+            new_weights = torch.rand(len(new_data))
+            new_weights_enum = [(i,new_weights[i]) for i in range(len(new_weights))]
             if mode == "dynamic":
-                threshold = alpha * self.max_size/time_stamp
+                if time_stamp == 0:
+                    threshold = 1 # normal reservoir sampling. no need to bias threshold for the first bucket
+                else:
+                    threshold = alpha * self.max_size/time_stamp
             else: # fixed
                 threshold = alpha
-            if new_weights[p_id] <= threshold:
-                self.buffer = AvalancheConcatDataset([new_data[p_id], self.buffer])
-        self.buffer = AvalancheSubset(self.buffer, range(self.max_size))
+            valid = list(filter(lambda x: x[1] <= threshold, new_weights_enum))
+            valid = list(map(lambda x: x[0], valid))
+        if len(new_data) == 0:
+            import pdb; pdb.set_trace()
+        else:
+            new_concat = AvalancheDataset(SubDataset(new_data, valid), task_labels=new_data[0][-1])
+            if len(new_concat) + len(self.buffer) > self.max_size:
+                max_tmp = self.max_size
+                self.resize(len(new_concat) + len(self.buffer))
+                self.buffer = AvalancheConcatDataset([new_concat, self.buffer])
+                self.resize(max_tmp)
+            else:
+                self.buffer = AvalancheConcatDataset([new_concat, self.buffer])
 
     def resize(self, new_size):
         """ Update the maximum size of the buffer. """
@@ -96,7 +116,7 @@ def create_strategy(name, model, optimizer, scheduler, criterion, eval_plugin, n
                     train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, temperature=1, 
                     plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
     elif name == "CWR":
-        return CWRStar(model, optimizer, criterion, train_mb_size=train_mb_size, 
+        return CWRStar(model, optimizer, criterion, cwr_layer_name=None, train_mb_size=train_mb_size, 
                        train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
                        plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
     elif name == "GDumb":
@@ -108,57 +128,60 @@ def create_strategy(name, model, optimizer, scheduler, criterion, eval_plugin, n
                       train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
                       plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
     elif name == "AGEM": 
-        # TODO: AGEM with reservoir sampling?
-        # if adding plugin, will override agem plugin
-        # still called agem?
+        # TODO: See: https://github.com/ElvishElvis/Continual-Learning/blob/master/train.py
         return AGEM(model, optimizer, criterion, buffer_size, buffer_size, train_mb_size=train_mb_size, 
                     train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
-                    plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
+                    plugins=[LRSchedulerPlugin(scheduler), CustomReplay(BiasedReservoirSamplingBuffer(max_size=buffer_size, alpha=alpha, mode="fixed"))], evaluator=eval_plugin)
     elif name == "Naive":
         return Naive(model, optimizer, criterion, train_mb_size=train_mb_size, 
                     train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
-                    plugins=[LRSchedulerPlugin(scheduler), CustomReplay(ReservoirSamplingBuffer(max_size=buffer_size))], 
+                    plugins=[LRSchedulerPlugin(scheduler), CustomReplay(BiasedReservoirSamplingBuffer(max_size=buffer_size, alpha=alpha, mode="fixed"))], 
                     evaluator=eval_plugin)
     elif name == "NaiveBiased":
         if alpha is None:
             raise ValueError('Missing input alpha for biased reservoir sampling')
-        else: # TODO: default dynamic, should add one more input, or change Naive customreplay plugin
+        else: 
             return Naive(model, optimizer, criterion, train_mb_size=train_mb_size, 
                          train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
                          plugins=[LRSchedulerPlugin(scheduler),
                           CustomReplay(BiasedReservoirSamplingBuffer(max_size=buffer_size, alpha=alpha, mode="dynamic"))], 
                          evaluator=eval_plugin)
     else:
-        raise ValueError('Unknown Strategy provided. Strategies available: EWC, SI, LwF, CWR, GDumb, ER, AGEM, Naive, NaiveBiased')
+        raise ValueError('Unknown Strategy provided. Strategies available: EWC,SI,LwF,CWR,GDumb,ER,AGEM,Naive,NaiveBiased')
+
+
+class LinearReduce(nn.Module):
+    def __init__(self, in_features, num_classes):
+        super().__init__()
+        self.linear = nn.Linear(in_features,num_classes)
+    
+    def forward(self, x):
+        return (self.linear(x).squeeze(1)) # remove 1 dimension
 
 def train_eval(save_path, curr_time, num_buckets, scenario, strategy, device, is_pretrained,\
                 train_mb_size, train_epochs, eval_mb_size, buffer_size, init_lr, \
                 in_features, num_classes, alpha=None, setting="iid") -> None:
     
-    scenario.to(device) # TODO: or load data to device? 
-    import pdb; pdb.set_trace()
-    print(scenario.device)
-    
     if torch.cuda.device_count() > 1:
         if is_pretrained:
-            model = DataParallel(Linear(in_features, num_classes))
+            model = DataParallel(LinearReduce(in_features, num_classes))
         else:
             model = DataParallel(resnet18(pretrained=False))
     else:
         if is_pretrained: 
-            model = Linear(in_features,num_classes)
+            model = LinearReduce(in_features,num_classes)
         else:
             model = resnet18(pretrained=False)
 
     model.to(device)
-    optimizer = Adam(model.parameters(), lr=init_lr, momentum=0.9)
+    optimizer = Adam(model.parameters(), lr=init_lr)
     criterion = CrossEntropyLoss()
-    scheduler = lr_scheduler.CyclicLR(optimizer, init_lr, 0.1)
+    scheduler = lr_scheduler.CyclicLR(optimizer, init_lr, 0.1, cycle_momentum=False)
 
     if setting == "iid": 
         eval_plugin_iid = EvaluationPlugin(accuracy_metrics(epoch=True, experience=True),
                                     timing_metrics(epoch=True),
-                                    loggers=[InteractiveLogger(), TextLogger(open(save_path+'/log.txt', 'a'))],
+                                    loggers=[InteractiveLogger(), TextLogger(open(save_path+f'/logs/{curr_time}_{strategy}.txt', 'a'))],
                                     benchmark=scenario,
                                     strict_checks=False)
 
@@ -186,19 +209,19 @@ def train_eval(save_path, curr_time, num_buckets, scenario, strategy, device, is
 
             print('Computing accuracy on each bucket')
             for j in range(len(test_stream)):
-                import pdb; pdb.set_trace()
-                results[exp_id,j] = iid_strat.eval(test_stream[exp_id])['accuracy_metrics']
+                expid = format(test_stream[exp_id].current_experience,'03d')
+                taskid = format(test_stream[exp_id].task_label,'03d')
+                results[exp_id,j] = iid_strat.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}']
         
-        # TODO: check if it's really accuracy from the dict
-        visualize(results, save_path) 
-        print(f"in-domain: {in_domain(results)},  \
+        visualize(results, save_path, curr_time, strategy) 
+        print(f"strategy: {strategy}, in-domain: {in_domain(results)},  \
             backward_transfer: {backward_transfer(results)}, \
             forward_transfer: {forward_transfer(results)}")
     
     else:   
         eval_plugin_stm = EvaluationPlugin(accuracy_metrics(epoch=True, experience=True),
                                     timing_metrics(epoch=True),
-                                    loggers=[InteractiveLogger(), TextLogger(open(save_path+'/log.txt', 'a'))],
+                                    loggers=[InteractiveLogger(), TextLogger(open(save_path+f'/logs/{curr_time}_{strategy}.txt', 'a'))],
                                     benchmark=scenario,
                                     strict_checks=False)
         #stm_buffer_size = 3300
@@ -225,12 +248,14 @@ def train_eval(save_path, curr_time, num_buckets, scenario, strategy, device, is
 
             print('Computing accuracy on future buckets')
             for j in range(len(test_stream[exp_id:])): # train test id offset by 1
-                results[exp_id,j] = stm_strat.eval(test_stream[exp_id])['accuracy_metrics'] 
+                expid = format(test_stream[exp_id].current_experience,'03d')
+                taskid = format(test_stream[exp_id].task_label,'03d')
+                results[exp_id,j] = stm_strat.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}']
         
-        visualize(results, save_path, partial=True)
-        print(f"in-domain: {next_domain(results)},  \
+        visualize(results, save_path, curr_time, strategy, partial=True)
+        print(f"strategy: {strategy}, next-domain: {next_domain(results)},  \
             forward_transfer: {forward_transfer(results)}")
     
-    torch.save(model.state_dict(), save_path+f"/models/{curr_time}_{strategy}.pth")
+    torch.save(model.state_dict(), save_path+f"/models/{curr_time}_{strategy}_{setting}.pth")
     
     return
