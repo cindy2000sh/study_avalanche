@@ -4,7 +4,7 @@ CUDA_VISIBLE_DEVICES=0,1 python main.py \
 --save_path "/data3/siqiz/avalanche/outputs" \
 --debug "True" \
 --num_buckets 11 \
---is_pretrained "True" \
+--is_pretrained "False" \
 --pretrained_path "/data/jiashi/moco_resnet50_clear_10_feature" \
 --num_classes 11 \
 --buffer_size "8,8" \
@@ -13,5 +13,5 @@ CUDA_VISIBLE_DEVICES=0,1 python main.py \
 --eval_mb_size 10 \
 --lr 0.001 \
 --strategies "AGEM" \
---alpha 0.25 \
+--alpha 1.0 \
 --biased_mode "dynamic"

@@ -83,7 +83,6 @@ class CLEAR10MOCO(Dataset):
         self.device = device
         self.input_folders = self.root_dir+"/bucket_"+str(bucket)
         self.tensor_paths = list(filter(lambda x: x.endswith(".pth"), glob(self.input_folders + '/**',recursive=True)))
-        
         self.targets = [self.tensor_paths[idx][len(self.input_folders):].split("/")[1] for idx in range(len(self.tensor_paths))]
         classes_name = sorted(list(set(self.targets)))
         classes_code = range(len(classes_name))

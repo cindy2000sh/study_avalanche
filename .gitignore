@@ -1,0 +1,6 @@
+# cache
+__pycache__
+
+# package related
+lightning_logs/
+lightly_outputs/

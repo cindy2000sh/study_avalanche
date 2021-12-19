@@ -2,7 +2,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import Adam, lr_scheduler
-from torch.nn import CrossEntropyLoss, DataParallel, Linear
 from torchvision.models import resnet18
 from avalanche.training.strategies import Naive, CWRStar, Replay, GDumb,  \
                                             LwF, AGEM, EWC, \
@@ -11,7 +10,6 @@ from avalanche.evaluation.metrics import accuracy_metrics,timing_metrics
 from avalanche.logging import InteractiveLogger, TextLogger
 from avalanche.training.plugins import EvaluationPlugin, LRSchedulerPlugin
 from avalanche.benchmarks.utils.data_loader import ReplayDataLoader
-from avalanche.training.storage_policy import ReservoirSamplingBuffer
 from avalanche.training.plugins import StrategyPlugin
 from avalanche.training.storage_policy import ExemplarsBuffer
 from avalanche.benchmarks.utils import AvalancheDataset, AvalancheConcatDataset, AvalancheSubset
@@ -164,9 +162,9 @@ def train_eval(save_path, curr_time, num_buckets, scenario, strategy, device, is
     
     if torch.cuda.device_count() > 1:
         if is_pretrained:
-            model = DataParallel(LinearReduce(in_features, num_classes))
+            model = nn.DataParallel(LinearReduce(in_features, num_classes))
         else:
-            model = DataParallel(resnet18(pretrained=False))
+            model = nn.DataParallel(resnet18(pretrained=False))
     else:
         if is_pretrained: 
             model = LinearReduce(in_features,num_classes)
@@ -175,7 +173,7 @@ def train_eval(save_path, curr_time, num_buckets, scenario, strategy, device, is
 
     model.to(device)
     optimizer = Adam(model.parameters(), lr=init_lr)
-    criterion = CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss()
     scheduler = lr_scheduler.CyclicLR(optimizer, init_lr, 0.1, cycle_momentum=False)
 
     if setting == "iid": 

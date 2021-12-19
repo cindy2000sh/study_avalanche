@@ -4,19 +4,20 @@ import numpy as np
 
 def visualize(M, save_path, curr_time, strategy, partial=False):
     # heatmap
+    plt.figure(figsize = (15,15))
     if not partial:
         ax = sns.heatmap(M, annot=True, fmt=".1%", cmap="YlGnBu")
         ax.set_title("Accuracy Matrix")
-        plt.xlabel('Train Bucket')
-        plt.ylabel('Test Bucket')
+        plt.xlabel('Test Bucket')
+        plt.ylabel('Train Bucket')
         plt.savefig(save_path+f'/figures/{curr_time}_{strategy}_iid.png')
     else:
         mask = np.zeros_like(M)
         mask[np.tril_indices_from(mask)] = True # lower triangle indices
         ax = sns.heatmap(M, annot=True, fmt=".1%", cmap="YlGnBu", mask = mask)
         ax.set_title("Accuracy Matrix")
-        plt.xlabel('Train Bucket')
-        plt.ylabel('Test Bucket')
+        plt.xlabel('Test Bucket')
+        plt.ylabel('Train Bucket')
         plt.savefig(save_path+f'/figures/{curr_time}_{strategy}_streaming.png')
     return
 
