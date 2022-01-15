@@ -1,6 +1,7 @@
-##################################################################
+#######################################################################
 # Replacement for dataset.py following published CLEAR10 structure
-##################################################################
+# to run, $CUDA_VISIBLE_DEVICES=0,1 python benchmark.py --debug "False"
+#######################################################################
 
 import random
 from glob import glob
@@ -120,6 +121,8 @@ def mkCLEAR(root_dir, return_task_id=True, mode="online", split_ratio=0.7, train
                                    only randomly select 25 images for each bucket (25 full, 25 train, 25 test),
                                    when pretrained = True, 
                                    randomly select 4 images for each label in a bucket
+        Return:
+            a benchmark object
         '''
     if mode != "online" and mode != "offline":
         raise ValueError("Invalid Mode. Please choose from online or offline.")
