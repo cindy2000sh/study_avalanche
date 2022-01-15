@@ -2,23 +2,18 @@
 # Replacement for dataset.py following published CLEAR10 structure
 ##################################################################
 
-from glob import glob
 import random
+from glob import glob
 import pandas as pd
-import numpy as np
 from PIL import Image
+
 import torch
-import torch.nn as nn
-from torch.optim import Adam, lr_scheduler
 from torch.utils.data import Dataset, Subset, ConcatDataset
 import torchvision.transforms as transforms
-from torchvision.models import resnet18
+
 from avalanche.benchmarks.generators import dataset_benchmark
 from avalanche.benchmarks.utils import AvalancheDataset
-from avalanche.training.strategies import LwF, Replay, CWRStar, SynapticIntelligence
-from avalanche.training.plugins import EvaluationPlugin, LRSchedulerPlugin
-from avalanche.evaluation.metrics import accuracy_metrics,timing_metrics
-from avalanche.logging import InteractiveLogger
+
 
 
 class CLEARIMG(Dataset):
@@ -241,6 +236,14 @@ def mkCLEAR(root_dir, return_task_id=True, mode="online", split_ratio=0.7, train
 if __name__ == "__main__":
     import sys
     import argparse
+    import numpy as np
+    import torch.nn as nn
+    from torch.optim import Adam, lr_scheduler
+    from torchvision.models import resnet18
+    from avalanche.training.strategies import LwF, Replay, CWRStar, SynapticIntelligence
+    from avalanche.training.plugins import EvaluationPlugin, LRSchedulerPlugin
+    from avalanche.evaluation.metrics import accuracy_metrics,timing_metrics
+    from avalanche.logging import InteractiveLogger
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug",type=str, choices=["True", "False"],
@@ -282,31 +285,16 @@ if __name__ == "__main__":
     # test ER strategy - replay based
     # test CWR - architecture based 
     # test SI - regularization based
-    def train_eval(num_buckets, train_epochs, train_mb_size,
-            eval_mb_size, device, scenario, mode, strat,
-            is_pretrained, in_features=2048, num_classes=11):
-        
-        if torch.cuda.device_count() > 1:
-            if is_pretrained:
-                model = nn.DataParallel(nn.Linear(in_features,num_classes))
-            else:
-                model = nn.DataParallel(resnet18(pretrained=False))
-        else:
-            if is_pretrained:
-                model = nn.Linear(in_features,num_classes)
-            else:
-                model = resnet18(pretrained=False)
-
-        model.to(device)
+    def switch_strat(model, num_buckets, train_epochs, train_mb_size, eval_mb_size, strat, scenario):
         optimizer = Adam(model.parameters(), lr=0.0001)
         criterion = nn.CrossEntropyLoss()
         scheduler = lr_scheduler.CyclicLR(optimizer, 0.0001, 0.1, cycle_momentum=False)
-
         eval_plugin = EvaluationPlugin(accuracy_metrics(epoch=True, experience=True),
                                     timing_metrics(epoch=True),
                                     loggers=[InteractiveLogger()],
                                     benchmark=scenario,
                                     strict_checks=False)
+
         if strat == "LwF":
             strategy = LwF(model, optimizer, criterion, alpha=np.linspace(0,2,num=num_buckets).tolist(), train_mb_size=train_mb_size, 
                         train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, temperature=1, 
@@ -325,8 +313,27 @@ if __name__ == "__main__":
                        train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
                        plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
         else:
-            raise ValueError("Invalid strategy.")    
+            raise ValueError("Invalid strategy.")   
+
+        return strategy 
+
+    def train_eval(num_buckets, train_epochs, train_mb_size, eval_mb_size, device, 
+                    scenario, mode, strat, is_pretrained, in_features=2048, num_classes=11):
         
+        if torch.cuda.device_count() > 1:
+            if is_pretrained:
+                model = nn.DataParallel(nn.Linear(in_features,num_classes))
+            else:
+                model = nn.DataParallel(resnet18(pretrained=False))
+        else:
+            if is_pretrained:
+                model = nn.Linear(in_features,num_classes)
+            else:
+                model = resnet18(pretrained=False)
+
+        model.to(device)
+        strategy = switch_strat(model, num_buckets, train_epochs, train_mb_size, eval_mb_size, strat, scenario)
+
         # TODO: verify experience id / task id, differ by 1? 
         print('Starting experiment...')
         train_stream = scenario.train_stream
@@ -347,16 +354,19 @@ if __name__ == "__main__":
             if mode == "offline":
                 print('Computing accuracy on each bucket')
                 for j in range(len(test_stream)):
-                    expid = format(test_stream[exp_id].current_experience,'03d')
-                    taskid = format(test_stream[exp_id].task_label,'03d')
-                    strategy.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}']   
+                    expid = format(test_stream[j].current_experience,'03d')
+                    taskid = format(test_stream[j].task_label,'03d')
+                    strategy.eval(test_stream[j])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}']   
 
             else: # online
                 print('Computing accuracy on future buckets') # train test id offset by 1 in two streams
-                for j in range(len(test_stream[exp_id:])): # evaluate on all future buckets to get forward transfer
-                    expid = format(test_stream[exp_id].current_experience,'03d')
-                    taskid = format(test_stream[exp_id].task_label,'03d')
-                    strategy.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}'] 
+                for j in range(exp_id, len(test_stream)): # evaluate on all future buckets to get forward transfer
+                    expid = format(test_stream[j].current_experience,'03d')
+                    taskid = format(test_stream[j].task_label,'03d')
+                    # TODO: check why taskid = expid + 2
+                    strategy.eval(test_stream[j])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}'] 
+            
+            strategy = switch_strat(strategy.model, num_buckets, train_epochs, train_mb_size, eval_mb_size, strat, scenario)
 
     strat_lst = ["LwF","ER","SI","CWR"]
     
@@ -423,8 +433,9 @@ if __name__ == "__main__":
     for strat in strat_lst:
         print("Current strategy:", strat)
         train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                    scenario=benchmark_instance, mode="offline", strat=strat, is_pretrained=True, in_features=2048, num_classes=11)
-    
+                    scenario=benchmark_instance, mode="offline", strat=strat, is_pretrained=True, in_features=2048, num_classes=11) 
+
+
     print("All CLEAR benchmark successfully loaded!")
     sys.exit(0)
 
