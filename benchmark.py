@@ -61,7 +61,7 @@ class CLEARUNSUP(Dataset):
 
     def __init__(self, dict_dir, bucket, feature_type, label, label_id, debug=False): 
         '''
-            Load unsupervised features.
+            Load extracted features with unsupervised models.
 
             Args: 
                 dict_dir(str): directory of .pth file
@@ -267,8 +267,9 @@ if __name__ == "__main__":
             train_transform, eval_transform = None, None
         return train_transform, eval_transform
     
-    # test LwF strategy - regularization based
+    # test LwF strategy - distillation based
     # test ER strategy - replay based
+    # TODO: CWR - architecture based / SI - regularization-based
     def train_eval(num_buckets, train_epochs, train_mb_size,
             eval_mb_size, device, scenario, mode, strat,
             is_pretrained, in_features=2048, num_classes=11):
@@ -331,6 +332,7 @@ if __name__ == "__main__":
                     strategy.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}']   
 
             else: # online
+                # TODO: evaluate on all future buckets to get forward transfer
                 print('Computing accuracy on the next future bucket') # train test id offset by 1 in two streams
                 expid = format(test_stream[exp_id].current_experience,'03d')
                 taskid = format(test_stream[exp_id].task_label,'03d')
