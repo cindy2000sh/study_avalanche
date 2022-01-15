@@ -15,7 +15,7 @@ import torchvision.transforms as transforms
 from torchvision.models import resnet18
 from avalanche.benchmarks.generators import dataset_benchmark
 from avalanche.benchmarks.utils import AvalancheDataset
-from avalanche.training.strategies import LwF, Replay
+from avalanche.training.strategies import LwF, Replay, CWRStar, SynapticIntelligence
 from avalanche.training.plugins import EvaluationPlugin, LRSchedulerPlugin
 from avalanche.evaluation.metrics import accuracy_metrics,timing_metrics
 from avalanche.logging import InteractiveLogger
@@ -240,6 +240,17 @@ def mkCLEAR(root_dir, return_task_id=True, mode="online", split_ratio=0.7, train
 
 if __name__ == "__main__":
     import sys
+    import argparse
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug",type=str, choices=["True", "False"],
+                    help="only load limited amount of features/images in the dataset for each bucket \
+                          for each class to debug",default="False")
+    args = parser.parse_args()
+    if args.debug == "False":
+        args.debug = False
+    else:
+        args.debug = True
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -269,7 +280,8 @@ if __name__ == "__main__":
     
     # test LwF strategy - distillation based
     # test ER strategy - replay based
-    # TODO: CWR - architecture based / SI - regularization-based
+    # test CWR - architecture based 
+    # test SI - regularization based
     def train_eval(num_buckets, train_epochs, train_mb_size,
             eval_mb_size, device, scenario, mode, strat,
             is_pretrained, in_features=2048, num_classes=11):
@@ -304,6 +316,14 @@ if __name__ == "__main__":
             strategy = Replay(model, optimizer, criterion, buffer_size, train_mb_size=train_mb_size, 
                       train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
                       plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
+        elif strat == "SI":
+            strategy = SynapticIntelligence(model, optimizer, criterion, si_lambda=0.0001, train_mb_size=train_mb_size, 
+                                    train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
+                                    plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
+        elif strat == "CWR":
+            strategy = CWRStar(model, optimizer, criterion, cwr_layer_name=None, train_mb_size=train_mb_size, 
+                       train_epochs=train_epochs, eval_mb_size=eval_mb_size, device=device, 
+                       plugins=[LRSchedulerPlugin(scheduler)], evaluator=eval_plugin)
         else:
             raise ValueError("Invalid strategy.")    
         
@@ -332,43 +352,44 @@ if __name__ == "__main__":
                     strategy.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}']   
 
             else: # online
-                # TODO: evaluate on all future buckets to get forward transfer
-                print('Computing accuracy on the next future bucket') # train test id offset by 1 in two streams
-                expid = format(test_stream[exp_id].current_experience,'03d')
-                taskid = format(test_stream[exp_id].task_label,'03d')
-                strategy.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}'] 
+                print('Computing accuracy on future buckets') # train test id offset by 1 in two streams
+                for j in range(len(test_stream[exp_id:])): # evaluate on all future buckets to get forward transfer
+                    expid = format(test_stream[exp_id].current_experience,'03d')
+                    taskid = format(test_stream[exp_id].task_label,'03d')
+                    strategy.eval(test_stream[exp_id])[f'Top1_Acc_Exp/eval_phase/test_stream/Task{taskid}/Exp{expid}'] 
 
+    strat_lst = ["LwF","ER","SI","CWR"]
     
     # Test cases, is_pretrained = False
     train_transform, eval_transform = get_transforms(is_pretrained=False)
 
     benchmark_instance = mkCLEAR("/data3/zhiqiul/CLEAR-10-PUBLIC", return_task_id=True, mode="online", \
-                                train_transform=train_transform, eval_transform=eval_transform, debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="LwF", is_pretrained=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="ER", is_pretrained=False)
+                                train_transform=train_transform, eval_transform=eval_transform, debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="online", strat=strat, is_pretrained=False)
     
     benchmark_instance = mkCLEAR("/data3/zhiqiul/CLEAR-10-PUBLIC", return_task_id=False, mode="online", \
-                                train_transform=train_transform, eval_transform=eval_transform, debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="LwF", is_pretrained=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="ER", is_pretrained=False)
+                                train_transform=train_transform, eval_transform=eval_transform, debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="online", strat=strat, is_pretrained=False)
         
     benchmark_instance = mkCLEAR("/data3/zhiqiul/CLEAR-10-PUBLIC", return_task_id=True, mode="offline", split_ratio=0.7, \
-                                train_transform=train_transform, eval_transform=eval_transform, debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="LwF", is_pretrained=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="ER", is_pretrained=False)
+                                train_transform=train_transform, eval_transform=eval_transform, debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="offline", strat=strat, is_pretrained=False)
 
     benchmark_instance = mkCLEAR(["/data3/zhiqiul/CLEAR-10-PUBLIC","/data3/zhiqiul/clear_datasets/CLEAR10-TEST-CLEANED"], return_task_id=True, mode="offline", \
-                                train_transform=train_transform, eval_transform=eval_transform, debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="LwF", is_pretrained=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="ER", is_pretrained=False)
+                                train_transform=train_transform, eval_transform=eval_transform, debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="offline", strat=strat, is_pretrained=False)
 
 
 
@@ -376,35 +397,34 @@ if __name__ == "__main__":
     train_transform, eval_transform = get_transforms(is_pretrained=True)
 
     benchmark_instance = mkCLEAR("/data3/zhiqiul/CLEAR-10-PUBLIC", return_task_id=True, mode="online", \
-                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="LwF", is_pretrained=True, in_features=2048, num_classes=11)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="ER", is_pretrained=True, in_features=2048, num_classes=11)
+                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="online", strat=strat, is_pretrained=True, in_features=2048, num_classes=11)
 
     benchmark_instance = mkCLEAR("/data3/zhiqiul/CLEAR-10-PUBLIC", return_task_id=False, mode="online", \
-                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="LwF", is_pretrained=True, in_features=2048, num_classes=11)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="online", strat="ER", is_pretrained=True, in_features=2048, num_classes=11)
+                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="online", strat=strat, is_pretrained=True, in_features=2048, num_classes=11)
 
     benchmark_instance = mkCLEAR("/data3/zhiqiul/CLEAR-10-PUBLIC", return_task_id=True, mode="offline", split_ratio=0.7, \
-                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="LwF", is_pretrained=True, in_features=2048, num_classes=11)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="ER", is_pretrained=True, in_features=2048, num_classes=11)
+                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="offline", strat=strat, is_pretrained=True, in_features=2048, num_classes=11)
 
     # There are 3300 input features in /data3/zhiqiul/clear_datasets/CLEAR10-TEST. Will not be available in public version.
     benchmark_instance = mkCLEAR(["/data3/zhiqiul/CLEAR-10-PUBLIC","/data3/zhiqiul/clear_datasets/CLEAR10-TEST"], return_task_id=True, mode="offline", \
-                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=False)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="LwF", is_pretrained=True, in_features=2048, num_classes=11)
-    train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
-                   scenario=benchmark_instance, mode="offline", strat="ER", is_pretrained=True, in_features=2048, num_classes=11)
-    
+                                train_transform=train_transform, eval_transform=eval_transform, pretrained=True, feature_type="moco_b0", debug=args.debug)
+    for strat in strat_lst:
+        print("Current strategy:", strat)
+        train_eval(num_buckets=11, train_epochs=3, train_mb_size=10, eval_mb_size=10, device=device, 
+                    scenario=benchmark_instance, mode="offline", strat=strat, is_pretrained=True, in_features=2048, num_classes=11)
     
     print("All CLEAR benchmark successfully loaded!")
-
+    sys.exit(0)
 
